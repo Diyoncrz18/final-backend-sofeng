@@ -1,0 +1,36 @@
+# dependencies
+node_modules/
+.pnp
+.pnp.*
+
+# build output
+dist/
+build/
+coverage/
+
+# typescript
+*.tsbuildinfo
+
+# env
+.env
+.env.local
+.env.*.local
+
+# logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# editors / IDE
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Cascade / Windsurf agent skill cache (per-machine, not source code)
+.windsurf/
+
+# OS
+Thumbs.db
