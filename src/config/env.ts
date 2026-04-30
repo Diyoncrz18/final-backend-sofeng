@@ -22,6 +22,16 @@ const envSchema = z.object({
   SUPABASE_URL: z.string().url("SUPABASE_URL harus berupa URL valid"),
   SUPABASE_ANON_KEY: z.string().min(20, "SUPABASE_ANON_KEY tidak valid"),
   SUPABASE_SERVICE_ROLE_KEY: z.string().min(20, "SUPABASE_SERVICE_ROLE_KEY tidak valid"),
+
+  // ── Cookie config (refresh token disimpan sebagai httpOnly cookie) ────
+  COOKIE_DOMAIN: z
+    .string()
+    .optional()
+    .transform((v) => (v && v.trim() !== "" ? v.trim() : undefined)),
+  COOKIE_SECURE: z
+    .enum(["true", "false"])
+    .default("false")
+    .transform((v) => v === "true"),
 });
 
 const parsed = envSchema.safeParse(process.env);

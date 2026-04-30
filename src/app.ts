@@ -1,9 +1,10 @@
+import cookieParser from "cookie-parser";
 import cors from "cors";
 import express from "express";
 import helmet from "helmet";
 import morgan from "morgan";
 
-import { env } from "./config/env";
+import { env, isProduction } from "./config/env";
 import { errorHandler } from "./middlewares/errorHandler";
 import { notFound } from "./middlewares/notFound";
 import apiRouter from "./routes";
@@ -23,8 +24,16 @@ export function createApp() {
   app.use(
     cors({
       origin(origin, callback) {
-        // Izinkan tools non-browser (curl, Postman) — origin undefined.
-        if (!origin) return callback(null, true);
+        // Browser request normal → origin selalu ada.
+        // Request tanpa origin (curl, Postman, server-to-server):
+        //   - dev   : izinkan untuk DX
+        //   - prod  : tolak untuk mengurangi attack surface CSRF +
+        //             credentials (cookie httpOnly).
+        if (!origin) {
+          return isProduction
+            ? callback(new Error("Origin diperlukan"))
+            : callback(null, true);
+        }
         if (env.ALLOWED_ORIGINS.includes(origin)) return callback(null, true);
         return callback(new Error(`Origin tidak diizinkan oleh CORS: ${origin}`));
       },
@@ -39,6 +48,10 @@ export function createApp() {
   // Body parsing
   app.use(express.json({ limit: "1mb" }));
   app.use(express.urlencoded({ extended: true }));
+
+  // Cookie parsing — diperlukan untuk endpoint /api/auth/refresh & logout
+  // yang membaca refresh token dari httpOnly cookie.
+  app.use(cookieParser());
 
   // Root info
   app.get("/", (_req, res) => {
