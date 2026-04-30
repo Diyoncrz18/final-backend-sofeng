@@ -12,8 +12,9 @@ Skema database Klinik Gigi untuk Supabase (Postgres). Berisi:
 ```
 supabase/
 ├── migrations/
-│   ├── 0001_initial_schema.sql   ← extensions, ENUMs, tables, indexes, triggers
-│   └── 0002_rls_policies.sql     ← Row Level Security untuk semua tabel
+│   ├── 0001_initial_schema.sql                ← extensions, ENUMs, tables, indexes, triggers
+│   ├── 0002_rls_policies.sql                  ← Row Level Security untuk semua tabel
+│   └── 0003_fix_rls_and_harden_trigger.sql    ← bug fix: dokter SELECT pasien, harden trigger
 ├── seed_dev.sql                  ← sample data dev (commented by default)
 └── README.md                     ← file ini
 ```
@@ -26,9 +27,13 @@ supabase/
 2. Sidebar → **SQL Editor** → **+ New query**.
 3. **Copy-paste** isi `migrations/0001_initial_schema.sql` → klik **Run**.
 4. Buat query baru → copy-paste `migrations/0002_rls_policies.sql` → **Run**.
-5. Verifikasi: sidebar → **Table Editor**, harus muncul 9 tabel di schema `public`.
+5. Buat query baru → copy-paste `migrations/0003_fix_rls_and_harden_trigger.sql` → **Run**.
+6. Verifikasi: sidebar → **Table Editor**, harus muncul 9 tabel di schema `public`.
 
 > Migration **idempotent** — aman dijalankan ulang kalau ada step yang gagal.
+
+> Project lama yang sudah apply 0001 + 0002 cukup jalankan 0003 saja untuk
+> mendapat fix RLS dokter & trigger yang lebih tahan banting.
 
 ### Alternatif: Supabase CLI
 
@@ -120,15 +125,20 @@ erDiagram
 
 | Tabel | Pasien | Dokter | Public |
 |---|---|---|---|
-| `profiles` | SELECT/UPDATE diri sendiri | SELECT diri + lihat semua dokter | — |
+| `profiles` | SELECT/UPDATE diri sendiri | SELECT semua user (after 0003) | — |
 | `pasien_profiles` | SELECT/INSERT/UPDATE diri | SELECT/UPDATE semua pasien | — |
 | `dokter_profiles` | SELECT semua | SELECT/INSERT/UPDATE diri sendiri | — |
 | `jadwal_dokter` | SELECT semua | manage jadwal sendiri | — |
-| `appointments` | SELECT/INSERT/UPDATE/DELETE miliknya | SELECT/UPDATE yang ditangani | — |
+| `appointments` | SELECT/INSERT/DELETE (terjadwal) miliknya | SELECT/UPDATE yang ditangani | — |
 | `rekam_medis` | SELECT miliknya (read-only) | full manage yang dia tulis | — |
 | `triage_kasus` | SELECT/INSERT miliknya | SELECT/UPDATE semua | — |
 | `antrian` | SELECT (lewat appointment-nya) | full manage | — |
 | `notifikasi` | SELECT/UPDATE/DELETE miliknya | sama (sebagai user) | — |
+
+> **Catatan post-0003**: pasien TIDAK lagi punya policy UPDATE di
+> `appointments` — operasi cancel/reschedule wajib lewat endpoint backend
+> khusus yang validate business rule (mis. minimal H-24 sebelum jam) lalu
+> tulis pakai service_role. Ini mencegah pasien set status `selesai` sendiri.
 
 > **Service role** (backend dengan `SUPABASE_SERVICE_ROLE_KEY`) bypass semua RLS. Pakai untuk job sistem (kirim notifikasi otomatis, cron reminder, dll).
 
