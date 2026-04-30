@@ -12,7 +12,8 @@
     "build": "tsc -p tsconfig.json",
     "start": "node dist/server.js",
     "type-check": "tsc --noEmit",
-    "clean": "rimraf dist"
+    "clean": "rimraf dist",
+    "user:create": "tsx scripts/create-user.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.46.0",
