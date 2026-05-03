@@ -81,6 +81,7 @@ Lihat [`.env.example`](./.env.example) untuk template lengkap.
 | `npm start`         | Jalankan hasil build (`node dist/server.js`)          |
 | `npm run type-check`| Cek error TypeScript tanpa emit                       |
 | `npm run clean`     | Hapus folder `dist/`                                  |
+| `npm run user:create`| Buat akun Supabase via service role (`pasien`/`dokter`) |
 
 ---
 
@@ -125,7 +126,7 @@ Base URL: `http://localhost:4000/api`
 | Method | Path               | Auth | Keterangan                                          |
 | ------ | ------------------ | :--: | --------------------------------------------------- |
 | GET    | `/health`          |  —   | Liveness probe                                       |
-| POST   | `/auth/register`   |  —   | Buat user baru. Body: `{ email, password, fullName, role }` |
+| POST   | `/auth/register`   |  —   | Buat akun pasien baru. Body: `{ email, password, fullName }` |
 | POST   | `/auth/login`      |  —   | Login. Body: `{ email, password }`. Response: `{ user, session }` |
 | GET    | `/auth/me`         |  ✅  | User dari token saat ini                             |
 | POST   | `/auth/logout`     |  ✅  | Revoke session                                       |
@@ -137,7 +138,25 @@ Base URL: `http://localhost:4000/api`
 
 ---
 
-## 7. Pola pemakaian Supabase
+## 7. Menambahkan akun dokter
+
+Akun dokter jangan dibuat lewat endpoint publik `/auth/register`. Gunakan skrip admin dari backend supaya `auth.users`, `profiles`, dan `dokter_profiles` terbentuk konsisten.
+
+```bash
+npm run user:create -- --email=drg.rina@klinikgigi.dev --password=Dokter12345! --role=dokter --name="Drg. Rina Santoso" --spesialisasi="Dokter Gigi Umum"
+```
+
+Field opsional:
+
+```bash
+--nip=NIP001 --sip=SIP-2026-001 --bio="Dokter gigi umum." --pengalaman=5
+```
+
+Setelah sukses, dokter bisa login lewat frontend `/login`.
+
+---
+
+## 8. Pola pemakaian Supabase
 
 Backend ini punya **dua jenis client**:
 
@@ -167,7 +186,7 @@ router.get("/me", requireAuth, asyncHandler(async (req, res) => {
 
 ---
 
-## 8. Integrasi dengan frontend (Next.js)
+## 9. Integrasi dengan frontend (Next.js)
 
 Frontend di `../klinik-sofeng` perlu tahu base URL backend ini.
 
@@ -199,7 +218,7 @@ fetch(`${API}/auth/me`, {
 
 ---
 
-## 9. Roadmap (next steps)
+## 10. Roadmap (next steps)
 
 - [ ] Buat skema tabel di Supabase: `pasien_profiles`, `appointments`, `dokter_profiles`, `rekam_medis`, dll.
 - [ ] Aktifkan RLS + policy per tabel.
@@ -212,7 +231,7 @@ fetch(`${API}/auth/me`, {
 
 ---
 
-## 10. Troubleshooting
+## 11. Troubleshooting
 
 **`Environment variables tidak valid`** saat start:
 - Pastikan `.env` ada dan semua key wajib terisi.
