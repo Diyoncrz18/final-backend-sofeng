@@ -88,12 +88,21 @@ router.get(
     const role = getRole(req);
     if (!role) throw ApiError.forbidden("Role tidak diketahui");
 
+    const userId = getUserId(req);
     const client = getUserClient(req);
     let query = client
       .from("appointments")
       .select(APPOINTMENT_SELECT)
       .order("tanggal", { ascending: true })
       .order("jam", { ascending: true });
+
+    // RLS tetap aktif, tetapi filter eksplisit membuat kontrak endpoint jelas:
+    // pasien melihat janji miliknya, dokter melihat janji yang ditujukan ke
+    // akun dokter tersebut.
+    query =
+      role === "dokter"
+        ? query.eq("dokter_id", userId)
+        : query.eq("pasien_id", userId);
 
     if (params.status && params.status.length > 0) {
       query = query.in("status", params.status);
@@ -180,18 +189,43 @@ router.post(
       throw ApiError.notFound("Dokter tidak ditemukan");
     }
 
-    // ── Validasi: cek konflik (pasien sama, jam sama, masih terjadwal) ──
-    const { data: conflict } = await supabaseAdmin
+    // ── Validasi konflik ──────────────────────────────────────────────
+    // Dua lapisan:
+    //   1. Pasien yang sama tidak boleh double-book di jam yang sama
+    //      (mencegah accidental duplicate dari satu user).
+    //   2. Dokter yang dipilih tidak boleh sudah punya pasien lain di
+    //      slot tersebut (mencegah jadwal bentrok dari dua pasien).
+    //
+    // Lapisan kedua di-back-up oleh partial unique index `uniq_dokter_slot_active`
+    // (lihat migration 0004) — kalau request konkuren lolos cek ini, DB
+    // akan reject dengan error 23505 yang ditangkap di catch insert.
+    const ACTIVE_STATUSES = ["terjadwal", "menunggu", "sedang_ditangani"];
+
+    const { data: pasienConflict } = await supabaseAdmin
       .from("appointments")
       .select("id")
       .eq("pasien_id", userId)
       .eq("tanggal", body.tanggal)
       .eq("jam", body.jam)
-      .in("status", ["terjadwal", "menunggu", "sedang_ditangani"])
+      .in("status", ACTIVE_STATUSES)
       .maybeSingle();
-    if (conflict) {
+    if (pasienConflict) {
       throw ApiError.conflict(
         "Anda sudah punya appointment di jam yang sama. Batalkan dulu sebelum buat baru.",
+      );
+    }
+
+    const { data: dokterConflict } = await supabaseAdmin
+      .from("appointments")
+      .select("id")
+      .eq("dokter_id", body.dokterId)
+      .eq("tanggal", body.tanggal)
+      .eq("jam", body.jam)
+      .in("status", ACTIVE_STATUSES)
+      .maybeSingle();
+    if (dokterConflict) {
+      throw ApiError.conflict(
+        "Slot ini sudah terisi pasien lain. Pilih jam yang berbeda.",
       );
     }
 
@@ -218,6 +252,17 @@ router.post(
       .single();
 
     if (cErr || !created) {
+      // Postgres unique_violation (23505) → race-loss di unique index
+      // `uniq_dokter_slot_active`. Beri pesan yang konsisten dengan
+      // pre-check di atas supaya FE bisa menampilkan error yang sama.
+      const isUniqueViolation =
+        cErr?.code === "23505" ||
+        /uniq_dokter_slot_active|duplicate key/i.test(cErr?.message ?? "");
+      if (isUniqueViolation) {
+        throw ApiError.conflict(
+          "Slot ini baru saja dipesan pasien lain. Silakan pilih jam yang berbeda.",
+        );
+      }
       throw ApiError.badRequest(`Gagal buat appointment: ${cErr?.message ?? "unknown"}`);
     }
 

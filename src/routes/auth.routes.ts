@@ -68,7 +68,8 @@ router.post(
 
 /* ──────────────────────────────────────────────────────────────────── */
 /*  POST /api/auth/register                                              */
-/*  Buat user baru. Role disimpan di user_metadata.                      */
+/*  Buat akun pasien baru. Akun dokter dibuat via skrip admin server-side */
+/*  agar role dokter tidak bisa di-self-register dari endpoint publik.    */
 /*                                                                       */
 /*  Catatan email_confirm:                                               */
 /*  - dev → true  : user langsung bisa login tanpa klik link verifikasi  */
@@ -76,7 +77,13 @@ router.post(
 /* ──────────────────────────────────────────────────────────────────── */
 const registerSchema = loginSchema.extend({
   fullName: z.string().min(2, "Nama minimal 2 karakter"),
-  role: z.enum(["pasien", "dokter"]).default("pasien"),
+  role: z
+    .enum(["pasien", "dokter"])
+    .optional()
+    .default("pasien")
+    .refine((role) => role === "pasien", {
+      message: "Akun dokter hanya dapat dibuat oleh admin.",
+    }),
 });
 
 router.post(
@@ -93,7 +100,7 @@ router.post(
       email_confirm: isDevelopment,
       user_metadata: {
         full_name: body.fullName,
-        role: body.role,
+        role: "pasien",
       },
     });
 

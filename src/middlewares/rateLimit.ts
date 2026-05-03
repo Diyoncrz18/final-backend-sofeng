@@ -8,21 +8,22 @@ import { env } from "../config/env";
  * - `authLimiter`     : login + refresh — proteksi brute-force credential.
  * - `registerLimiter` : register — proteksi spam akun baru.
  *
- * Limit dimatikan saat NODE_ENV=test agar test suite tidak terblokir.
+ * Limit dimatikan saat NODE_ENV=development/test agar demo dan test lokal
+ * tidak terblokir. Di production limiter tetap aktif.
  *
  * Catatan: kalau backend di-deploy di belakang reverse proxy (Vercel,
  * Render, Nginx), `app.set('trust proxy', 1)` di app.ts wajib aktif
  * supaya `req.ip` membaca header X-Forwarded-For dengan benar.
  */
 
-const skipInTests = () => env.NODE_ENV === "test";
+const skipOutsideProduction = () => env.NODE_ENV !== "production";
 
 export const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 menit
-  max: 10,                  // 10 percobaan per IP per window
+  max: 10,                    // 10 percobaan per IP per window
   standardHeaders: "draft-7",
   legacyHeaders: false,
-  skip: skipInTests,
+  skip: skipOutsideProduction,
   message: {
     error: {
       message:
@@ -36,7 +37,7 @@ export const registerLimiter = rateLimit({
   max: 5,                   // 5 akun baru per IP per jam
   standardHeaders: "draft-7",
   legacyHeaders: false,
-  skip: skipInTests,
+  skip: skipOutsideProduction,
   message: {
     error: {
       message:
