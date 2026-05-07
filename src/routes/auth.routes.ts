@@ -2,7 +2,7 @@ import { Router } from "express";
 import { z } from "zod";
 
 import { isDevelopment } from "../config/env";
-import { createSupabaseUserClient, supabaseAdmin } from "../config/supabase";
+import { createSupabaseUserClient, supabaseAdmin, supabaseAuth } from "../config/supabase";
 import { authLimiter, registerLimiter } from "../middlewares/rateLimit";
 import { requireAuth } from "../middlewares/requireAuth";
 import { ApiError } from "../utils/ApiError";
@@ -54,7 +54,7 @@ router.post(
   asyncHandler(async (req, res) => {
     const body = loginSchema.parse(req.body);
 
-    const { data, error } = await supabaseAdmin.auth.signInWithPassword(body);
+    const { data, error } = await supabaseAuth.auth.signInWithPassword(body);
     if (error || !data.session) {
       // Pesan generik — jangan beri sinyal email exists / password salah
       // (mencegah user enumeration).
@@ -131,7 +131,7 @@ router.post(
       throw ApiError.unauthorized("Sesi tidak ditemukan");
     }
 
-    const { data, error } = await supabaseAdmin.auth.refreshSession({
+    const { data, error } = await supabaseAuth.auth.refreshSession({
       refresh_token: refreshToken,
     });
     if (error || !data.session) {

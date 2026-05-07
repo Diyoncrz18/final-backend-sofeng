@@ -55,6 +55,36 @@ const APPOINTMENT_SELECT = `
   )
 `;
 
+async function createNotification(input: {
+  userId: string;
+  type: "pengingat" | "konfirmasi" | "pengumuman" | "darurat" | "lainnya";
+  title: string;
+  description?: string | null;
+  link?: string | null;
+}) {
+  const { error } = await supabaseAdmin.from("notifikasi").insert({
+    user_id: input.userId,
+    type: input.type,
+    title: input.title,
+    description: input.description ?? null,
+    link: input.link ?? null,
+  });
+
+  if (error) {
+    console.error("[notifikasi] gagal membuat notifikasi:", error.message);
+  }
+}
+
+function getAppointmentPatientName(appointment: unknown): string {
+  const pasienValue = (appointment as { pasien?: unknown }).pasien;
+  const pasien = Array.isArray(pasienValue) ? pasienValue[0] : pasienValue;
+  const profileValue = (pasien as { profile?: unknown } | null | undefined)?.profile;
+  const profile = Array.isArray(profileValue) ? profileValue[0] : profileValue;
+  const fullName = (profile as { full_name?: unknown } | null | undefined)?.full_name;
+
+  return typeof fullName === "string" && fullName.trim() ? fullName.trim() : "Pasien";
+}
+
 /* ──────────────────────────────────────────────────────────────────── */
 /*  GET /api/appointments                                                */
 /*  Daftar appointment user yang login.                                  */
@@ -266,6 +296,14 @@ router.post(
       throw ApiError.badRequest(`Gagal buat appointment: ${cErr?.message ?? "unknown"}`);
     }
 
+    await createNotification({
+      userId: body.dokterId,
+      type: body.jenis === "darurat" ? "darurat" : "konfirmasi",
+      title: body.jenis === "darurat" ? "Appointment Darurat Baru" : "Appointment Baru",
+      description: `${getAppointmentPatientName(created)} membuat ${created.jenis} pada ${created.tanggal} pukul ${created.jam.slice(0, 5)}.`,
+      link: "/dokter/appointment",
+    });
+
     res.status(201).json({ appointment: created });
   }),
 );
@@ -336,6 +374,14 @@ router.post(
     if (uErr || !updated) {
       throw ApiError.internal(`Gagal cancel appointment: ${uErr?.message ?? "unknown"}`);
     }
+
+    await createNotification({
+      userId: isOwner ? appt.dokter_id : appt.pasien_id,
+      type: "pengumuman",
+      title: "Appointment Dibatalkan",
+      description: `Appointment tanggal ${appt.tanggal} pukul ${String(appt.jam).slice(0, 5)} dibatalkan oleh ${isOwner ? "pasien" : "dokter"}.`,
+      link: isOwner ? "/dokter/appointment" : "/pasien/jadwal",
+    });
 
     res.json({ appointment: updated });
   }),

@@ -1,6 +1,6 @@
 import type { NextFunction, Request, Response } from "express";
 
-import { supabaseAdmin } from "../config/supabase";
+import { createSupabaseUserClient } from "../config/supabase";
 import { ApiError } from "../utils/ApiError";
 import { asyncHandler } from "../utils/asyncHandler";
 
@@ -25,7 +25,7 @@ export const requireAuth = asyncHandler(
       throw ApiError.unauthorized("Empty bearer token");
     }
 
-    const { data, error } = await supabaseAdmin.auth.getUser(token);
+    const { data, error } = await createSupabaseUserClient(token).auth.getUser();
     if (error || !data?.user) {
       throw ApiError.unauthorized(error?.message ?? "Invalid or expired token");
     }

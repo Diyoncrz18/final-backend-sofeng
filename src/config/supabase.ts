@@ -23,6 +23,24 @@ export const supabaseAdmin: SupabaseClient = createClient(
 );
 
 /**
+ * supabaseAuth
+ * ────────────
+ * Client anon khusus flow Supabase Auth milik end-user (login/refresh).
+ * Dipisahkan dari `supabaseAdmin` supaya sesi/token user tidak pernah
+ * mengubah Authorization context milik service-role client.
+ */
+export const supabaseAuth: SupabaseClient = createClient(
+  env.SUPABASE_URL,
+  env.SUPABASE_ANON_KEY,
+  {
+    auth: {
+      autoRefreshToken: false,
+      persistSession: false,
+    },
+  },
+);
+
+/**
  * createSupabaseUserClient
  * ────────────────────────
  * Client per-request yang bertindak sebagai user (RLS aktif).

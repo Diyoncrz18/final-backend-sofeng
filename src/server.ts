@@ -1,9 +1,14 @@
+import { createServer } from "http";
+
 import { createApp } from "./app";
 import { env } from "./config/env";
+import { attachSocketServer } from "./socket";
 
 const app = createApp();
+const server = createServer(app);
+attachSocketServer(server);
 
-const server = app.listen(env.PORT, () => {
+server.listen(env.PORT, () => {
   console.log(
     `[backend-klinik-sofeng] listening on http://localhost:${env.PORT} (${env.NODE_ENV})`,
   );
