@@ -8,7 +8,6 @@ import { asyncHandler } from "../utils/asyncHandler";
 import { getRole, getUserClient, getUserId, isPasien } from "../utils/db";
 
 const router = Router();
-router.use(requireAuth);
 
 /* ──────────────────────────────────────────────────────────────────── */
 /*  Const & schema                                                       */
@@ -55,6 +54,10 @@ const APPOINTMENT_SELECT = `
   )
 `;
 
+const idParamsSchema = z.object({
+  id: z.string().uuid("ID appointment tidak valid"),
+});
+
 async function createNotification(input: {
   userId: string;
   type: "pengingat" | "konfirmasi" | "pengumuman" | "darurat" | "lainnya";
@@ -84,6 +87,155 @@ function getAppointmentPatientName(appointment: unknown): string {
 
   return typeof fullName === "string" && fullName.trim() ? fullName.trim() : "Pasien";
 }
+
+async function getAppointmentQueue(appointmentId: string) {
+  const { data, error } = await supabaseAdmin
+    .from("antrian")
+    .select("id, appointment_id, nomor, status, estimasi_jam, dipanggil_at, selesai_at, created_at, updated_at")
+    .eq("appointment_id", appointmentId)
+    .maybeSingle();
+
+  if (error) {
+    throw ApiError.badRequest(`Gagal ambil antrian: ${error.message}`);
+  }
+
+  return data;
+}
+
+async function nextQueueNumberForDate(tanggal: string) {
+  const { data: appointments, error: appointmentErr } = await supabaseAdmin
+    .from("appointments")
+    .select("id")
+    .eq("tanggal", tanggal);
+
+  if (appointmentErr) {
+    throw ApiError.badRequest(`Gagal ambil appointment hari ini: ${appointmentErr.message}`);
+  }
+
+  const appointmentIds = (appointments ?? []).map((appointment) => appointment.id);
+  if (appointmentIds.length === 0) return 1;
+
+  const { data: queues, error: queueErr } = await supabaseAdmin
+    .from("antrian")
+    .select("nomor")
+    .in("appointment_id", appointmentIds);
+
+  if (queueErr) {
+    throw ApiError.badRequest(`Gagal hitung nomor antrian: ${queueErr.message}`);
+  }
+
+  return Math.max(0, ...(queues ?? []).map((queue) => Number(queue.nomor) || 0)) + 1;
+}
+
+async function ensureQueueForAppointment(appointment: {
+  id: string;
+  tanggal: string;
+  jam: string;
+}) {
+  const existing = await getAppointmentQueue(appointment.id);
+  if (existing) return existing;
+
+  const nomor = await nextQueueNumberForDate(appointment.tanggal);
+  const { data, error } = await supabaseAdmin
+    .from("antrian")
+    .insert({
+      appointment_id: appointment.id,
+      nomor,
+      status: "menunggu",
+      estimasi_jam: appointment.jam,
+    })
+    .select("id, appointment_id, nomor, status, estimasi_jam, dipanggil_at, selesai_at, created_at, updated_at")
+    .single();
+
+  if (error || !data) {
+    const alreadyExists =
+      error?.code === "23505" || /duplicate key|antrian_appointment_id/i.test(error?.message ?? "");
+    if (alreadyExists) {
+      const queue = await getAppointmentQueue(appointment.id);
+      if (queue) return queue;
+    }
+    throw ApiError.internal(`Gagal membuat antrian: ${error?.message ?? "unknown"}`);
+  }
+
+  return data;
+}
+
+/* ──────────────────────────────────────────────────────────────────── */
+/*  POST /api/appointments/:id/check-in                                  */
+/*  Public endpoint untuk QR scan resepsionis.                           */
+/*  Transisi: terjadwal → menunggu + buat nomor antrian.                 */
+/* ──────────────────────────────────────────────────────────────────── */
+router.post(
+  "/:id/check-in",
+  asyncHandler(async (req, res) => {
+    const { id } = idParamsSchema.parse(req.params);
+
+    const { data: appt, error: aErr } = await supabaseAdmin
+      .from("appointments")
+      .select("id, pasien_id, dokter_id, status, tanggal, jam, jenis")
+      .eq("id", id)
+      .maybeSingle();
+
+    if (aErr) throw ApiError.badRequest(`Gagal ambil appointment: ${aErr.message}`);
+    if (!appt) throw ApiError.notFound("Appointment tidak ditemukan");
+
+    if (appt.status === "dibatalkan" || appt.status === "tidak_hadir") {
+      throw ApiError.unprocessable("Appointment sudah tidak aktif dan tidak bisa dikonfirmasi.");
+    }
+    if (appt.status === "selesai") {
+      throw ApiError.unprocessable("Appointment sudah selesai.");
+    }
+
+    const queue = await ensureQueueForAppointment(appt);
+    const shouldConfirm = appt.status === "terjadwal";
+
+    if (shouldConfirm) {
+      const { error: updateErr } = await supabaseAdmin
+        .from("appointments")
+        .update({ status: "menunggu" })
+        .eq("id", id);
+
+      if (updateErr) {
+        throw ApiError.internal(`Gagal konfirmasi kedatangan: ${updateErr.message}`);
+      }
+
+      await Promise.all([
+        createNotification({
+          userId: appt.pasien_id,
+          type: "konfirmasi",
+          title: "Kedatangan Terkonfirmasi",
+          description: `QR tiket Anda sudah discan resepsionis. Nomor antrian: ${queue.nomor}.`,
+          link: "/pasien/jadwal",
+        }),
+        createNotification({
+          userId: appt.dokter_id,
+          type: "konfirmasi",
+          title: "Pasien Sudah Check-in",
+          description: `Pasien untuk ${appt.jenis} pukul ${String(appt.jam).slice(0, 5)} sudah dikonfirmasi resepsionis.`,
+          link: "/dokter/appointment",
+        }),
+      ]);
+    }
+
+    const { data: updated, error: detailErr } = await supabaseAdmin
+      .from("appointments")
+      .select(APPOINTMENT_SELECT)
+      .eq("id", id)
+      .single();
+
+    if (detailErr || !updated) {
+      throw ApiError.internal(`Gagal ambil appointment terbaru: ${detailErr?.message ?? "unknown"}`);
+    }
+
+    res.json({
+      appointment: updated,
+      queue,
+      confirmed: shouldConfirm,
+    });
+  }),
+);
+
+router.use(requireAuth);
 
 /* ──────────────────────────────────────────────────────────────────── */
 /*  GET /api/appointments                                                */
@@ -154,10 +306,6 @@ router.get(
 /*  GET /api/appointments/:id                                            */
 /*  Detail satu appointment.                                             */
 /* ──────────────────────────────────────────────────────────────────── */
-const idParamsSchema = z.object({
-  id: z.string().uuid("ID appointment tidak valid"),
-});
-
 router.get(
   "/:id",
   asyncHandler(async (req, res) => {
