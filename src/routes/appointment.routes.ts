@@ -554,17 +554,55 @@ router.post(
 /*  POST /api/appointments/:id/complete                                  */
 /*  Dokter menyimpan rekam medis dan menyelesaikan appointment.           */
 /* ──────────────────────────────────────────────────────────────────── */
+const optionalExamText = (max: number) =>
+  z.preprocess(
+    (value) => (value === "" ? null : value),
+    z.string().trim().max(max).optional().nullable(),
+  );
+
+const requiredExamText = (message: string, max: number) =>
+  z
+    .string({
+      required_error: message,
+      invalid_type_error: message,
+    })
+    .trim()
+    .min(1, message)
+    .max(max);
+
+const optionalExamCost = z.preprocess(
+  (value) => {
+    if (value === "" || value === null || value === undefined) return null;
+    return value;
+  },
+  z.coerce
+    .number({ invalid_type_error: "Biaya harus berupa angka" })
+    .min(0, "Biaya tidak boleh negatif")
+    .optional()
+    .nullable(),
+);
+
 const completeSchema = z.object({
-  keluhan: z.string().trim().max(1000).optional().nullable(),
-  areaGigi: z.string().trim().max(120).optional().nullable(),
-  diagnosa: z.string().trim().min(2, "Diagnosis wajib diisi").max(1000),
-  temuan: z.string().trim().max(2000).optional().nullable(),
-  tindakan: z.string().trim().min(2, "Tindakan wajib diisi").max(2000),
-  resep: z.string().trim().max(2000).optional().nullable(),
-  catatan: z.string().trim().max(2000).optional().nullable(),
-  biaya: z.coerce.number().min(0).optional().nullable(),
+  keluhan: optionalExamText(1000),
+  areaGigi: optionalExamText(120),
+  diagnosa: requiredExamText("Diagnosis wajib diisi", 1000),
+  temuan: optionalExamText(2000),
+  tindakan: requiredExamText("Tindakan wajib diisi", 2000),
+  resep: optionalExamText(2000),
+  catatan: optionalExamText(2000),
+  biaya: optionalExamCost,
   perluKontrol: z.boolean().optional(),
 });
+
+function examValidationMessage(error: z.ZodError): string {
+  const { fieldErrors, formErrors } = error.flatten();
+  const fieldMessages = Object.values(fieldErrors)
+    .flatMap((messages) => messages ?? [])
+    .filter(Boolean);
+  const messages = [...formErrors, ...fieldMessages];
+
+  return messages[0] ?? "Lengkapi data pemeriksaan terlebih dahulu.";
+}
 
 function optionalText(value?: string | null): string | null {
   const text = value?.trim();
@@ -591,7 +629,14 @@ router.post(
     }
 
     const { id } = idParamsSchema.parse(req.params);
-    const body = completeSchema.parse(req.body ?? {});
+    const parsedBody = completeSchema.safeParse(req.body ?? {});
+    if (!parsedBody.success) {
+      throw ApiError.badRequest(
+        examValidationMessage(parsedBody.error),
+        parsedBody.error.flatten(),
+      );
+    }
+    const body = parsedBody.data;
     const userId = getUserId(req);
 
     const { data: appt, error: aErr } = await supabaseAdmin
