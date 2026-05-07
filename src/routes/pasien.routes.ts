@@ -40,6 +40,135 @@ type PasienBundle = {
   };
 };
 
+type PasienProfileRow = PasienBundle["profile"];
+type PasienClinicalRow = PasienBundle["pasien"];
+
+type RekamMedisListRow = {
+  id: string;
+  pasien_id: string;
+  dokter_id: string;
+  appointment_id: string | null;
+  tanggal: string;
+  diagnosa: string;
+  tindakan: string | null;
+  resep: string | null;
+  biaya: number | null;
+  catatan: string | null;
+  created_at: string;
+  updated_at: string;
+  dokter: {
+    id: string;
+    spesialisasi: string;
+    profile: {
+      id: string;
+      full_name: string;
+      avatar_url: string | null;
+    };
+  } | null;
+  appointment: {
+    id: string;
+    tanggal: string;
+    jam: string;
+    jenis: string;
+    status: string;
+    keluhan: string | null;
+    catatan_dokter: string | null;
+  } | null;
+};
+
+type AppointmentListRow = {
+  id: string;
+  pasien_id: string;
+  dokter_id: string;
+  tanggal: string;
+  jam: string;
+  jenis: string;
+  status: string;
+  keluhan: string | null;
+  catatan_dokter: string | null;
+  created_at: string;
+  updated_at: string;
+  pasien: {
+    id: string;
+    profile: {
+      id: string;
+      full_name: string;
+      avatar_url: string | null;
+    };
+  } | null;
+  dokter: {
+    id: string;
+    spesialisasi: string;
+    profile: {
+      id: string;
+      full_name: string;
+      avatar_url: string | null;
+    };
+  } | null;
+};
+
+const REKAM_MEDIS_SELECT = `
+  id,
+  pasien_id,
+  dokter_id,
+  appointment_id,
+  tanggal,
+  diagnosa,
+  tindakan,
+  resep,
+  biaya,
+  catatan,
+  created_at,
+  updated_at,
+  dokter:dokter_profiles!rekam_medis_dokter_id_fkey (
+    id,
+    spesialisasi,
+    profile:profiles!inner ( id, full_name, avatar_url )
+  ),
+  appointment:appointments!rekam_medis_appointment_id_fkey (
+    id,
+    tanggal,
+    jam,
+    jenis,
+    status,
+    keluhan,
+    catatan_dokter
+  )
+`;
+
+const APPOINTMENT_MEDICAL_SELECT = `
+  id,
+  pasien_id,
+  dokter_id,
+  tanggal,
+  jam,
+  jenis,
+  status,
+  keluhan,
+  catatan_dokter,
+  created_at,
+  updated_at,
+  pasien:pasien_profiles!appointments_pasien_id_fkey (
+    id,
+    profile:profiles!inner ( id, full_name, avatar_url )
+  ),
+  dokter:dokter_profiles!appointments_dokter_id_fkey (
+    id,
+    spesialisasi,
+    profile:profiles!inner ( id, full_name, avatar_url )
+  )
+`;
+
+function groupByPatientId<T extends { pasien_id: string }>(rows: T[]) {
+  const grouped = new Map<string, T[]>();
+  for (const row of rows) {
+    const current = grouped.get(row.pasien_id) ?? [];
+    current.push(row);
+    grouped.set(row.pasien_id, current);
+  }
+  return grouped;
+}
+
 async function ensurePasienBundle(userId: string): Promise<PasienBundle> {
   // 1. Profile (wajib ada — dibuat oleh trigger handle_new_user).
   const { data: profile, error: pErr } = await supabaseAdmin
@@ -97,6 +226,89 @@ router.get(
     requireRole(req, "pasien");
     const bundle = await ensurePasienBundle(getUserId(req));
     res.json(bundle);
+  }),
+);
+
+/* ──────────────────────────────────────────────────────────────────── */
+/*  GET /api/pasien                                                     */
+/*  Daftar semua pasien untuk dokter, lengkap dengan profil klinis,      */
+/*  rekam medis, dan riwayat appointment.                               */
+/* ──────────────────────────────────────────────────────────────────── */
+router.get(
+  "/",
+  asyncHandler(async (req, res) => {
+    requireRole(req, "dokter");
+
+    const { data: profileData, error: profileErr } = await supabaseAdmin
+      .from("profiles")
+      .select("id, full_name, role, email, phone, avatar_url")
+      .eq("role", "pasien")
+      .order("full_name", { ascending: true });
+
+    if (profileErr) {
+      throw ApiError.badRequest(`Gagal ambil daftar pasien: ${profileErr.message}`);
+    }
+
+    const profiles = (profileData ?? []) as PasienProfileRow[];
+    const patientIds = profiles.map((profile) => profile.id);
+
+    let clinicalRows: PasienClinicalRow[] = [];
+    let medicalRows: RekamMedisListRow[] = [];
+    let appointmentRows: AppointmentListRow[] = [];
+
+    if (patientIds.length > 0) {
+      const { data: pasienData, error: pasienErr } = await supabaseAdmin
+        .from("pasien_profiles")
+        .select(
+          "id, no_rm, tanggal_lahir, jenis_kelamin, alamat, golongan_darah, riwayat_alergi, catatan_medis",
+        )
+        .in("id", patientIds);
+
+      if (pasienErr) {
+        throw ApiError.badRequest(`Gagal ambil profil klinis pasien: ${pasienErr.message}`);
+      }
+
+      const { data: rekamData, error: rekamErr } = await supabaseAdmin
+        .from("rekam_medis")
+        .select(REKAM_MEDIS_SELECT)
+        .in("pasien_id", patientIds)
+        .order("tanggal", { ascending: false })
+        .order("created_at", { ascending: false });
+
+      if (rekamErr) {
+        throw ApiError.badRequest(`Gagal ambil rekam medis: ${rekamErr.message}`);
+      }
+
+      const { data: appointmentData, error: appointmentErr } = await supabaseAdmin
+        .from("appointments")
+        .select(APPOINTMENT_MEDICAL_SELECT)
+        .in("pasien_id", patientIds)
+        .order("tanggal", { ascending: false })
+        .order("jam", { ascending: false });
+
+      if (appointmentErr) {
+        throw ApiError.badRequest(
+          `Gagal ambil riwayat appointment pasien: ${appointmentErr.message}`,
+        );
+      }
+
+      clinicalRows = (pasienData ?? []) as PasienClinicalRow[];
+      medicalRows = (rekamData ?? []) as unknown as RekamMedisListRow[];
+      appointmentRows = (appointmentData ?? []) as unknown as AppointmentListRow[];
+    }
+
+    const clinicalById = new Map(clinicalRows.map((row) => [row.id, row]));
+    const medicalByPatientId = groupByPatientId(medicalRows);
+    const appointmentsByPatientId = groupByPatientId(appointmentRows);
+
+    const items = profiles.map((profile) => ({
+      profile,
+      pasien: clinicalById.get(profile.id) ?? null,
+      rekamMedis: medicalByPatientId.get(profile.id) ?? [],
+      appointments: appointmentsByPatientId.get(profile.id) ?? [],
+    }));
+
+    res.json({ items });
   }),
 );
 
