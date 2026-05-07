@@ -5,7 +5,7 @@ import { supabaseAdmin } from "../config/supabase";
 import { requireAuth } from "../middlewares/requireAuth";
 import { ApiError } from "../utils/ApiError";
 import { asyncHandler } from "../utils/asyncHandler";
-import { getRole, getUserClient, getUserId, isPasien } from "../utils/db";
+import { getRole, getUserClient, getUserId, isDokter, isPasien } from "../utils/db";
 
 const router = Router();
 
@@ -52,6 +52,21 @@ const APPOINTMENT_SELECT = `
     spesialisasi,
     profile:profiles!inner ( id, full_name, avatar_url )
   )
+`;
+
+const REKAM_MEDIS_SELECT = `
+  id,
+  pasien_id,
+  dokter_id,
+  appointment_id,
+  tanggal,
+  diagnosa,
+  tindakan,
+  resep,
+  biaya,
+  catatan,
+  created_at,
+  updated_at
 `;
 
 const idParamsSchema = z.object({
@@ -532,6 +547,153 @@ router.post(
     });
 
     res.json({ appointment: updated });
+  }),
+);
+
+/* ──────────────────────────────────────────────────────────────────── */
+/*  POST /api/appointments/:id/complete                                  */
+/*  Dokter menyimpan rekam medis dan menyelesaikan appointment.           */
+/* ──────────────────────────────────────────────────────────────────── */
+const completeSchema = z.object({
+  keluhan: z.string().trim().max(1000).optional().nullable(),
+  areaGigi: z.string().trim().max(120).optional().nullable(),
+  diagnosa: z.string().trim().min(2, "Diagnosis wajib diisi").max(1000),
+  temuan: z.string().trim().max(2000).optional().nullable(),
+  tindakan: z.string().trim().min(2, "Tindakan wajib diisi").max(2000),
+  resep: z.string().trim().max(2000).optional().nullable(),
+  catatan: z.string().trim().max(2000).optional().nullable(),
+  biaya: z.coerce.number().min(0).optional().nullable(),
+  perluKontrol: z.boolean().optional(),
+});
+
+function optionalText(value?: string | null): string | null {
+  const text = value?.trim();
+  return text ? text : null;
+}
+
+function buildMedicalNotes(body: z.infer<typeof completeSchema>): string | null {
+  const notes = [
+    optionalText(body.keluhan) ? `Keluhan: ${optionalText(body.keluhan)}` : null,
+    optionalText(body.areaGigi) ? `Area gigi: ${optionalText(body.areaGigi)}` : null,
+    optionalText(body.temuan) ? `Temuan klinis: ${optionalText(body.temuan)}` : null,
+    optionalText(body.catatan) ? `Catatan: ${optionalText(body.catatan)}` : null,
+    body.perluKontrol ? "Perlu jadwal kontrol ulang." : null,
+  ].filter(Boolean);
+
+  return notes.length > 0 ? notes.join("\n") : null;
+}
+
+router.post(
+  "/:id/complete",
+  asyncHandler(async (req, res) => {
+    if (!isDokter(req)) {
+      throw ApiError.forbidden("Hanya dokter yang dapat menyelesaikan appointment");
+    }
+
+    const { id } = idParamsSchema.parse(req.params);
+    const body = completeSchema.parse(req.body ?? {});
+    const userId = getUserId(req);
+
+    const { data: appt, error: aErr } = await supabaseAdmin
+      .from("appointments")
+      .select("id, pasien_id, dokter_id, status, tanggal, jam, jenis, catatan_dokter")
+      .eq("id", id)
+      .maybeSingle();
+
+    if (aErr) throw ApiError.badRequest(`Gagal ambil appointment: ${aErr.message}`);
+    if (!appt) throw ApiError.notFound("Appointment tidak ditemukan");
+    if (appt.dokter_id !== userId) {
+      throw ApiError.forbidden("Anda tidak berwenang menyelesaikan appointment ini");
+    }
+
+    if (appt.status === "terjadwal") {
+      throw ApiError.unprocessable(
+        "Appointment belum terkonfirmasi. Scan QR kedatangan pasien terlebih dahulu.",
+      );
+    }
+    if (appt.status === "selesai") {
+      throw ApiError.unprocessable("Appointment sudah selesai.");
+    }
+    if (appt.status === "dibatalkan" || appt.status === "tidak_hadir") {
+      throw ApiError.unprocessable("Appointment sudah tidak aktif dan tidak bisa diselesaikan.");
+    }
+
+    const catatan = buildMedicalNotes(body);
+    const tindakan = optionalText(body.tindakan);
+    const resep = optionalText(body.resep);
+
+    const { data: record, error: recordErr } = await supabaseAdmin
+      .from("rekam_medis")
+      .insert({
+        pasien_id: appt.pasien_id,
+        dokter_id: appt.dokter_id,
+        appointment_id: appt.id,
+        tanggal: appt.tanggal,
+        diagnosa: body.diagnosa,
+        tindakan,
+        resep,
+        biaya: body.biaya ?? 0,
+        catatan,
+      })
+      .select(REKAM_MEDIS_SELECT)
+      .single();
+
+    if (recordErr || !record) {
+      throw ApiError.internal(
+        `Gagal menyimpan rekam medis: ${recordErr?.message ?? "unknown"}`,
+      );
+    }
+
+    const auditNote = [
+      `[Pemeriksaan selesai] ${new Date().toISOString()}`,
+      `Diagnosis: ${body.diagnosa}`,
+      tindakan ? `Tindakan: ${tindakan}` : null,
+      catatan,
+    ]
+      .filter(Boolean)
+      .join("\n");
+
+    const newCatatan = appt.catatan_dokter
+      ? `${appt.catatan_dokter}\n\n${auditNote}`
+      : auditNote;
+
+    const { data: updated, error: updateErr } = await supabaseAdmin
+      .from("appointments")
+      .update({
+        status: "selesai",
+        catatan_dokter: newCatatan,
+      })
+      .eq("id", id)
+      .select(APPOINTMENT_SELECT)
+      .single();
+
+    if (updateErr || !updated) {
+      throw ApiError.internal(
+        `Gagal menyelesaikan appointment: ${updateErr?.message ?? "unknown"}`,
+      );
+    }
+
+    const { error: queueErr } = await supabaseAdmin
+      .from("antrian")
+      .update({
+        status: "selesai",
+        selesai_at: new Date().toISOString(),
+      })
+      .eq("appointment_id", id);
+
+    if (queueErr) {
+      console.error("[appointments] gagal update antrian selesai:", queueErr.message);
+    }
+
+    await createNotification({
+      userId: appt.pasien_id,
+      type: "konfirmasi",
+      title: "Pemeriksaan Selesai",
+      description: `Pemeriksaan ${appt.jenis} pada ${appt.tanggal} pukul ${String(appt.jam).slice(0, 5)} sudah selesai.`,
+      link: "/pasien/riwayat",
+    });
+
+    res.json({ appointment: updated, record });
   }),
 );
 
