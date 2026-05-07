@@ -13,8 +13,13 @@ Skema database Klinik Gigi untuk Supabase (Postgres). Berisi:
 supabase/
 ├── migrations/
 │   ├── 0001_initial_schema.sql                ← extensions, ENUMs, tables, indexes, triggers
-│   ├── 0002_rls_policies.sql                  ← Row Level Security untuk semua tabel
-│   └── 0003_fix_rls_and_harden_trigger.sql    ← bug fix: dokter SELECT pasien, harden trigger
+│   ├── 0002_rls_policies.sql                  ← Row Level Security untuk tabel inti
+│   ├── 0003_fix_rls_and_harden_trigger.sql    ← bug fix: dokter SELECT pasien, harden trigger
+│   ├── 0004_appointments_unique_slot.sql      ← cegah double-booking dokter per slot aktif
+│   ├── 0005_enable_notifikasi_realtime.sql    ← realtime untuk notifikasi
+│   ├── 0006_chat_realtime_schema.sql          ← tabel chat_conversations + chat_messages
+│   ├── 0007_fix_pasien_profiles_rls.sql       ← policy tambahan pasien/chat
+│   └── 0008_sync_runtime_policies_and_chat_timestamp.sql ← sinkronisasi policy + trigger chat
 ├── seed_dev.sql                  ← sample data dev (commented by default)
 └── README.md                     ← file ini
 ```
@@ -25,10 +30,8 @@ supabase/
 
 1. Buka [Supabase Dashboard](https://supabase.com/dashboard) → project Anda.
 2. Sidebar → **SQL Editor** → **+ New query**.
-3. **Copy-paste** isi `migrations/0001_initial_schema.sql` → klik **Run**.
-4. Buat query baru → copy-paste `migrations/0002_rls_policies.sql` → **Run**.
-5. Buat query baru → copy-paste `migrations/0003_fix_rls_and_harden_trigger.sql` → **Run**.
-6. Verifikasi: sidebar → **Table Editor**, harus muncul 9 tabel di schema `public`.
+3. Jalankan semua file di `migrations/` secara berurutan dari `0001` sampai `0008`.
+4. Verifikasi: sidebar → **Table Editor**, harus muncul 11 tabel di schema `public`.
 
 > Migration **idempotent** — aman dijalankan ulang kalau ada step yang gagal.
 
@@ -67,6 +70,11 @@ erDiagram
   pasien_profiles ||--o{ triage_kasus : "lapor kasus"
   dokter_profiles ||--o{ triage_kasus : "menangani kasus"
   profiles ||--o{ notifikasi : "menerima notif"
+  pasien_profiles ||--o{ chat_conversations : "punya chat"
+  dokter_profiles ||--o{ chat_conversations : "melayani chat"
+  appointments ||--o{ chat_conversations : "opsional terkait"
+  chat_conversations ||--o{ chat_messages : "berisi pesan"
+  profiles ||--o{ chat_messages : "mengirim pesan"
 ```
 
 ---
@@ -119,6 +127,14 @@ erDiagram
 - `type` enum (pengingat, konfirmasi, pengumuman, darurat, lainnya)
 - `title`, `description`, `link`, `read_at`
 
+### `chat_conversations`
+- `pasien_id`, `dokter_id`, `appointment_id` (nullable)
+- `subject`, `status` (`aktif`/`ditutup`), `last_message_at`
+
+### `chat_messages`
+- `conversation_id`, `sender_id`
+- `body`, `read_at`, `created_at`
+
 ---
 
 ## 5. Pola RLS (Row Level Security)
@@ -134,6 +150,8 @@ erDiagram
 | `triage_kasus` | SELECT/INSERT miliknya | SELECT/UPDATE semua | — |
 | `antrian` | SELECT (lewat appointment-nya) | full manage | — |
 | `notifikasi` | SELECT/UPDATE/DELETE miliknya | sama (sebagai user) | — |
+| `chat_conversations` | SELECT/INSERT chat sendiri | SELECT chat sendiri | — |
+| `chat_messages` | SELECT/INSERT/UPDATE read untuk chat sendiri | sama | — |
 
 > **Catatan post-0003**: pasien TIDAK lagi punya policy UPDATE di
 > `appointments` — operasi cancel/reschedule wajib lewat endpoint backend
@@ -225,7 +243,7 @@ drop function if exists public.set_updated_at()     cascade;
 
 ## 10. Roadmap database
 
-- [ ] Tambah tabel `chat_konsultasi` untuk fitur konsultasi online
+- [x] Tambah tabel chat untuk fitur konsultasi online (`chat_conversations`, `chat_messages`)
 - [ ] Tambah `payment_records` untuk tracking biaya rekam_medis
 - [ ] Tambah view `appointments_today` untuk query dashboard dokter
 - [ ] Setup Realtime (Supabase) untuk tabel `antrian` & `notifikasi`
